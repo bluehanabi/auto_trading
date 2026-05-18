@@ -2,3 +2,6 @@ data/cache/
 __pycache__/
 *.pyc
 .venv/
+.kis_token.json
+watchlist*.csv
+.env

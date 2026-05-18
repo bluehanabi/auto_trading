@@ -40,8 +40,9 @@ def buy_and_hold_return(df, initial_cash, commission, tax):
 def _load(args):
     if args.minute:
         return load_intraday(args.symbol, args.start, args.end,
-                             synthetic=args.synthetic)
-    return load_data(args.symbol, args.start, args.end, synthetic=args.synthetic)
+                             synthetic=args.synthetic, source=args.source)
+    return load_data(args.symbol, args.start, args.end,
+                     synthetic=args.synthetic, source=args.source)
 
 
 def _won(x):
@@ -147,6 +148,8 @@ def main():
                    help="분봉 백테스트 (장마감 강제청산)")
     p.add_argument("--synthetic", action="store_true",
                    help="합성 데이터 사용 (네트워크 불필요)")
+    p.add_argument("--source", default="fdr", choices=["fdr", "kis"],
+                   help="실데이터 출처 (fdr=일봉, kis=일봉/분봉)")
     p.add_argument("--entry", default=None, choices=list(ENTRY_SIGNALS),
                    help="진입 신호 (기본: 분봉=upbar, 일봉=everyday)")
     p.add_argument("--tp", type=float, default=None, help="익절 비율")

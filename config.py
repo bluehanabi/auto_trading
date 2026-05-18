@@ -16,6 +16,12 @@ MAX_HOLD_BARS = None        # 최대 보유 봉 수. None 이면 무제한
 # --- 분봉(단타) ---
 BARS_PER_DAY = 380          # 1분봉 하루 봉 수 (09:00~ 약 6시간 20분, 점심휴장 생략)
 
+# --- KIS Open API (실데이터·실거래) ---
+# 키는 코드/저장소에 직접 쓰지 말고 환경변수로 설정한다(자세한 건 kis_api.py):
+#   KIS_ENV         'paper'(모의투자, 기본) | 'real'(실전투자)
+#   KIS_APP_KEY     앱키        KIS_APP_SECRET  앱시크릿
+#   KIS_ACCOUNT_NO  계좌번호 (시세 조회만 하면 불필요)
+
 # --- 자금 ---
 INITIAL_CASH = 10_000_000   # 초기 자금 (원)
 

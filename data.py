@@ -18,8 +18,12 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ca
 _REQUIRED = ["Open", "High", "Low", "Close"]
 
 
-def load_data(symbol, start, end, synthetic=False, seed=42):
-    """OHLCV DataFrame 반환 (DatetimeIndex, 컬럼: Open/High/Low/Close[/Volume])."""
+def load_data(symbol, start, end, synthetic=False, seed=42, source="fdr"):
+    """일봉 OHLCV DataFrame 반환 (DatetimeIndex, 컬럼: Open/High/Low/Close[/Volume]).
+
+    source: 'fdr'(FinanceDataReader, 기본) | 'kis'(한국투자증권 Open API).
+    한 번 받은 데이터는 캐시 CSV 로 저장돼 다음 실행·다른 도구에서 재사용된다.
+    """
     if synthetic:
         return make_synthetic(symbol, start, end, seed=seed)
 
@@ -29,6 +33,13 @@ def load_data(symbol, start, end, synthetic=False, seed=42):
         df = pd.read_csv(cache, index_col=0, parse_dates=True)
         return _normalize(df)
 
+    df = _fetch_kis_daily(symbol, start, end) if source == "kis" \
+        else _fetch_fdr_daily(symbol, start, end)
+    df.to_csv(cache)
+    return df
+
+
+def _fetch_fdr_daily(symbol, start, end):
     try:
         import FinanceDataReader as fdr
     except ImportError as exc:
@@ -43,9 +54,12 @@ def load_data(symbol, start, end, synthetic=False, seed=42):
             f"'{symbol}' 데이터를 가져오지 못했습니다 (네트워크 차단 또는 잘못된 종목코드). "
             "오프라인 환경이라면 synthetic=True 로 검증해 보세요."
         )
-    df = _normalize(df)
-    df.to_csv(cache)
-    return df
+    return _normalize(df)
+
+
+def _fetch_kis_daily(symbol, start, end):
+    from kis_api import KISClient
+    return _normalize(KISClient().daily_ohlcv(symbol, start, end))
 
 
 def make_synthetic(symbol, start, end, *, seed=42, mu=0.0004, sigma=0.018,
@@ -81,24 +95,35 @@ def make_synthetic(symbol, start, end, *, seed=42, mu=0.0004, sigma=0.018,
     return df.round(0)
 
 
-def load_intraday(symbol, start, end, synthetic=False, seed=42, **kwargs):
+def load_intraday(symbol, start, end, synthetic=False, seed=42,
+                  source="fdr", **kwargs):
     """분봉(1분봉) OHLCV DataFrame 반환.
 
-    실데이터 분봉은 FinanceDataReader 로 받을 수 없어 KIS 분봉 API 연동이
-    필요하다(다음 단계). 그 전까지는 캐시 CSV 가 있으면 쓰고, 없으면 안내한다.
-    오프라인 검증은 synthetic=True 로 합성 분봉을 생성한다.
+    source='kis' 면 KIS Open API 로 'end' 날짜의 분봉을 받는다(KIS 분봉 TR 은
+    당일 위주라 한 번에 하루치만 제공). source 가 그 외이면 캐시 CSV 가 있을
+    때만 쓰고, 없으면 안내한다. 오프라인 검증은 synthetic=True 를 사용한다.
     """
     if synthetic:
         return make_synthetic_intraday(symbol, start, end, seed=seed, **kwargs)
 
     os.makedirs(CACHE_DIR, exist_ok=True)
+
+    if source == "kis":
+        day = pd.Timestamp(end).strftime("%Y%m%d")
+        cache = os.path.join(CACHE_DIR, f"{symbol}_intraday_{day}.csv")
+        if os.path.exists(cache):
+            return _normalize(pd.read_csv(cache, index_col=0, parse_dates=True))
+        from kis_api import KISClient
+        df = _normalize(KISClient().minute_ohlcv(symbol, day=day))
+        df.to_csv(cache)
+        return df
+
     cache = os.path.join(CACHE_DIR, f"{symbol}_intraday.csv")
     if os.path.exists(cache):
-        df = pd.read_csv(cache, index_col=0, parse_dates=True)
-        return _normalize(df)
+        return _normalize(pd.read_csv(cache, index_col=0, parse_dates=True))
     raise RuntimeError(
-        f"'{symbol}' 분봉 데이터가 없습니다. KIS 분봉 API 연동(다음 단계)이 필요하거나, "
-        f"{cache} 에 OHLCV CSV 를 두세요. 오프라인 검증은 synthetic=True 를 사용하세요."
+        f"'{symbol}' 분봉 데이터가 없습니다. 실데이터 분봉은 source='kis' 가 필요합니다 "
+        f"(FinanceDataReader 는 분봉 미제공). 오프라인 검증은 synthetic=True 를 사용하세요."
     )
 
 
