@@ -26,7 +26,7 @@ def compute_metrics(result):
         m.update(
             win_rate=0.0, gross_pnl=0.0, net_pnl=0.0, total_cost=0.0,
             avg_win=0.0, avg_loss=0.0, payoff=0.0, profit_factor=0.0,
-            expectancy=0.0, expectancy_pct=0.0, avg_hold_days=0.0, reasons={},
+            expectancy=0.0, expectancy_pct=0.0, avg_hold_bars=0.0, reasons={},
         )
         return m
 
@@ -55,7 +55,7 @@ def compute_metrics(result):
         profit_factor=(gross_win / gross_loss) if gross_loss > 0 else float("inf"),
         expectancy=float(nets.mean()),
         expectancy_pct=float(rets.mean()),
-        avg_hold_days=float(np.mean([t.hold_days for t in trades])),
+        avg_hold_bars=float(np.mean([t.bars_held for t in trades])),
         reasons=reasons,
     )
     return m

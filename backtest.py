@@ -1,24 +1,29 @@
 """백테스트 엔진 — 단일 종목, 동시 1포지션, 보유 현금 전액 매수.
 
+일봉·분봉 모두 동일 엔진으로 처리한다(봉 단위에 무관). 분봉 단타에서는
+flat_eod=True 로 장 마감 봉에 강제청산해 오버나이트 갭 위험을 제거한다.
+
 체결 규칙
-  - 진입: 직전 봉의 종가 기준 신호 → 이번 봉 '시가'에 매수 (룩어헤드 방지)
+  - 진입: 직전 봉 종가 기준 신호 → 이번 봉 '시가'에 매수 (룩어헤드 방지)
   - 청산: 보유 중 매 봉마다 아래 순서로 검사
       1) 시가가 이미 손절선 이하  → 시가에 손절 (갭하락)
       2) 시가가 이미 목표가 이상  → 시가에 익절 (갭상승)
       3) 그 외엔 고가가 목표 도달 → 익절 / 저가가 손절선 도달 → 손절
-      4) 한 봉에서 목표·손절선을 동시에 통과하면 일봉만으로는 선후를 알 수 없음.
-         기본은 보수적으로 '손절 우선'(ambiguous='pessimistic').
-      5) max_hold_days 초과 시 종가에 시간청산
+      4) 한 봉에서 목표·손절선을 동시 통과하면 선후를 알 수 없음 →
+         기본은 보수적으로 '손절 우선'(ambiguous='pessimistic')
+      5) max_hold_bars 초과 시 종가에 시간청산('time')
+      6) flat_eod=True 면 그날 마지막 봉 종가에 강제청산('day_end')
   - 마지막 봉까지 남은 포지션은 종가에 강제청산('eod')
 
 비용
   - 매수: 체결금액 × commission
   - 매도: 체결금액 × (commission + tax)
-  - slippage 는 체결가에 반영 (매수는 불리하게 +, 매도는 불리하게 -)
+  - slippage 는 체결가에 반영 (매수는 +, 매도는 - 방향으로 불리하게)
 """
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 
@@ -29,18 +34,15 @@ class Trade:
     entry_price: float
     exit_price: float
     shares: int
-    reason: str          # 'target' | 'stop' | 'time' | 'eod'
+    reason: str          # 'target' | 'stop' | 'time' | 'day_end' | 'eod'
     gross_pnl: float     # 가격 차익만 (비용 제외)
     cost: float          # 매수·매도 비용 합계
     net_pnl: float       # 비용까지 차감한 순손익
+    bars_held: int       # 진입~청산 사이 봉 수
 
     @property
     def net_return(self):
         return self.net_pnl / (self.entry_price * self.shares)
-
-    @property
-    def hold_days(self):
-        return (self.exit_date - self.entry_date).days
 
 
 @dataclass
@@ -56,7 +58,8 @@ def run_backtest(
     *,
     take_profit=0.01,
     stop_loss=0.01,
-    max_hold_days=None,
+    max_hold_bars=None,
+    flat_eod=False,
     initial_cash=10_000_000,
     commission=0.00015,
     tax=0.0015,
@@ -71,6 +74,12 @@ def run_backtest(
     c = df["Close"].to_numpy(dtype=float)
     sig = entry_signal.reindex(idx).fillna(False).to_numpy(dtype=bool)
     n = len(df)
+
+    last_of_day = np.zeros(n, dtype=bool)
+    if flat_eod and n > 0:
+        days = idx.normalize().to_numpy()
+        last_of_day[-1] = True
+        last_of_day[:-1] = days[:-1] != days[1:]
 
     cash = float(initial_cash)
     pos = None
@@ -104,18 +113,24 @@ def run_backtest(
                     xprice, reason = target, "target"
                 elif hit_stop:
                     xprice, reason = stop, "stop"
-                elif max_hold_days is not None and held >= max_hold_days:
+                elif max_hold_bars is not None and held >= max_hold_bars:
                     xprice, reason = c[i], "time"
 
+            if xprice is None and flat_eod and last_of_day[i]:
+                xprice, reason = c[i], "day_end"
+
             if xprice is not None:
-                cash, trade = _close(cash, pos, idx[i], xprice, reason,
+                cash, trade = _close(cash, pos, idx[i], xprice, reason, held,
                                      commission, tax, slippage)
                 trades.append(trade)
                 pos = None
                 exited = True
 
         # --- 2. 진입: 직전 봉 신호 → 이번 봉 시가 체결 ---
-        if pos is None and not exited and i > 0 and sig[i - 1]:
+        can_enter = pos is None and not exited and i > 0 and sig[i - 1]
+        if flat_eod and last_of_day[i]:
+            can_enter = False   # 곧 강제청산될 봉에는 진입하지 않음
+        if can_enter:
             fill = o[i] * (1 + slippage)
             shares = math.floor(cash / (fill * (1 + commission)))
             if shares > 0:
@@ -134,7 +149,8 @@ def run_backtest(
 
     # 마지막 봉에 남은 포지션 강제청산
     if pos is not None:
-        cash, trade = _close(cash, pos, idx[-1], c[-1], "eod",
+        held = (n - 1) - pos["entry_idx"]
+        cash, trade = _close(cash, pos, idx[-1], c[-1], "eod", held,
                              commission, tax, slippage)
         trades.append(trade)
         equity[-1] = cash
@@ -142,7 +158,8 @@ def run_backtest(
     return Result(trades, pd.Series(equity, index=idx, dtype=float), float(initial_cash))
 
 
-def _close(cash, pos, exit_date, raw_exit, reason, commission, tax, slippage):
+def _close(cash, pos, exit_date, raw_exit, reason, bars_held,
+           commission, tax, slippage):
     shares = pos["shares"]
     exit_price = raw_exit * (1 - slippage)
     proceeds = exit_price * shares
@@ -162,5 +179,6 @@ def _close(cash, pos, exit_date, raw_exit, reason, commission, tax, slippage):
         gross_pnl=gross,
         cost=total_cost,
         net_pnl=net,
+        bars_held=int(bars_held),
     )
     return cash, trade

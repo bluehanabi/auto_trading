@@ -20,6 +20,15 @@ def everyday(df):
     return pd.Series(True, index=df.index)
 
 
+def up_candle(df):
+    """직전 봉이 양봉(종가>시가)일 때 진입 — '분봉이 상승할 때 진입'의 단순 구현.
+
+    노이즈가 큰 약한 신호다. 이 신호로 +2%/-2% 가 실제로 수익이 나는지는
+    반드시 백테스트로 확인해야 한다(대체로 거래비용에 잠식된다).
+    """
+    return (df["Close"] > df["Open"]).fillna(False)
+
+
 def sma_cross(df, short=5, long=20):
     """단기 이동평균이 장기 이동평균을 상향 돌파(골든크로스)."""
     s = df["Close"].rolling(short).mean()
@@ -41,6 +50,7 @@ def rsi_oversold(df, period=14, threshold=30):
 
 ENTRY_SIGNALS = {
     "everyday": everyday,
+    "upbar": up_candle,
     "sma": sma_cross,
     "rsi": rsi_oversold,
 }

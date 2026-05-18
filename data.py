@@ -81,6 +81,80 @@ def make_synthetic(symbol, start, end, *, seed=42, mu=0.0004, sigma=0.018,
     return df.round(0)
 
 
+def load_intraday(symbol, start, end, synthetic=False, seed=42, **kwargs):
+    """분봉(1분봉) OHLCV DataFrame 반환.
+
+    실데이터 분봉은 FinanceDataReader 로 받을 수 없어 KIS 분봉 API 연동이
+    필요하다(다음 단계). 그 전까지는 캐시 CSV 가 있으면 쓰고, 없으면 안내한다.
+    오프라인 검증은 synthetic=True 로 합성 분봉을 생성한다.
+    """
+    if synthetic:
+        return make_synthetic_intraday(symbol, start, end, seed=seed, **kwargs)
+
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache = os.path.join(CACHE_DIR, f"{symbol}_intraday.csv")
+    if os.path.exists(cache):
+        df = pd.read_csv(cache, index_col=0, parse_dates=True)
+        return _normalize(df)
+    raise RuntimeError(
+        f"'{symbol}' 분봉 데이터가 없습니다. KIS 분봉 API 연동(다음 단계)이 필요하거나, "
+        f"{cache} 에 OHLCV CSV 를 두세요. 오프라인 검증은 synthetic=True 를 사용하세요."
+    )
+
+
+def make_synthetic_intraday(symbol, start, end, *, seed=42, mu=0.0004,
+                            sigma=0.018, base_price=50_000.0, volume_scale=1.0,
+                            bars_per_day=380):
+    """1분봉 합성 데이터.
+
+    sigma 는 '일' 변동성이며 분봉 변동성은 sigma/sqrt(bars_per_day) 로 환산한다.
+    하루 거래시간을 09:00 부터 bars_per_day 분으로 두고(점심 휴장은 생략),
+    거래일 사이에는 오버나이트 갭을 넣는다.
+    """
+    offset = sum(map(ord, symbol)) if symbol else 0
+    rng = np.random.default_rng(seed + offset)
+    days = pd.bdate_range(start, end)
+    if len(days) == 0:
+        raise ValueError("기간(start~end)에 거래일이 없습니다.")
+
+    bar_sigma = sigma / np.sqrt(bars_per_day)
+    bar_mu = mu / bars_per_day
+    overnight_sigma = sigma * 0.4
+
+    stamps, o_all, h_all, l_all, c_all, v_all = [], [], [], [], [], []
+    price = base_price
+    for day in days:
+        price = price * np.exp(rng.normal(0.0, overnight_sigma))   # 시초가 갭
+        session = pd.date_range(day + pd.Timedelta(hours=9),
+                                periods=bars_per_day, freq="1min")
+        rets = rng.normal(bar_mu, bar_sigma, bars_per_day)
+        closes = price * np.exp(np.cumsum(rets))
+        opens = np.concatenate([[price], closes[:-1]])
+        wig = np.abs(rng.normal(0.0, bar_sigma * 0.6, bars_per_day))
+        highs = np.maximum(opens, closes) * (1.0 + wig)
+        lows = np.minimum(opens, closes) * (1.0 - wig)
+        vols = (rng.integers(2_000, 20_000, bars_per_day) * volume_scale).astype(np.int64)
+        stamps.append(session.to_numpy())
+        o_all.append(opens)
+        h_all.append(highs)
+        l_all.append(lows)
+        c_all.append(closes)
+        v_all.append(vols)
+        price = closes[-1]
+
+    df = pd.DataFrame(
+        {
+            "Open": np.concatenate(o_all),
+            "High": np.concatenate(h_all),
+            "Low": np.concatenate(l_all),
+            "Close": np.concatenate(c_all),
+            "Volume": np.concatenate(v_all),
+        },
+        index=pd.DatetimeIndex(np.concatenate(stamps)),
+    )
+    return df.round(0)
+
+
 def _normalize(df):
     df = df.rename(columns=str.capitalize)
     missing = [c for c in _REQUIRED if c not in df.columns]
