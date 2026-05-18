@@ -21,7 +21,7 @@ _REQUIRED = ["Open", "High", "Low", "Close"]
 def load_data(symbol, start, end, synthetic=False, seed=42):
     """OHLCV DataFrame 반환 (DatetimeIndex, 컬럼: Open/High/Low/Close[/Volume])."""
     if synthetic:
-        return _synthetic(symbol, start, end, seed)
+        return make_synthetic(symbol, start, end, seed=seed)
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache = os.path.join(CACHE_DIR, f"{symbol}_{start}_{end}.csv")
@@ -48,6 +48,39 @@ def load_data(symbol, start, end, synthetic=False, seed=42):
     return df
 
 
+def make_synthetic(symbol, start, end, *, seed=42, mu=0.0004, sigma=0.018,
+                   base_price=50_000.0, volume_scale=1.0):
+    """기하 브라운 운동 기반 합성 일봉.
+
+    실제 시세는 아니지만 변동성·갭·장중 고저를 흉내 내므로 엔진·스크리너
+    검증과 '익절폭' 전략 거동 체험에 충분하다. mu/sigma/base_price/volume_scale
+    을 종목마다 다르게 주면 유동성·변동성이 제각각인 가상 유니버스를 만들 수 있다.
+    """
+    offset = sum(map(ord, symbol)) if symbol else 0
+    rng = np.random.default_rng(seed + offset)
+    dates = pd.bdate_range(start, end)
+    n = len(dates)
+    if n == 0:
+        raise ValueError("기간(start~end)에 거래일이 없습니다.")
+
+    intraday = max(sigma * 0.45, 0.002)   # 장중 고가/저가 변동 폭
+
+    rets = rng.normal(mu, sigma, n)
+    close = base_price * np.exp(np.cumsum(rets))
+    prev_close = np.concatenate([[base_price], close[:-1]])
+    gap = rng.normal(0.0, sigma * 0.2, n)
+    open_ = prev_close * (1.0 + gap)
+    high = np.maximum(open_, close) * (1.0 + np.abs(rng.normal(0.0, intraday, n)))
+    low = np.minimum(open_, close) * (1.0 - np.abs(rng.normal(0.0, intraday, n)))
+    volume = (rng.integers(1_000_000, 5_000_000, n) * volume_scale).astype(np.int64)
+
+    df = pd.DataFrame(
+        {"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume},
+        index=dates,
+    )
+    return df.round(0)
+
+
 def _normalize(df):
     df = df.rename(columns=str.capitalize)
     missing = [c for c in _REQUIRED if c not in df.columns]
@@ -57,37 +90,3 @@ def _normalize(df):
     df = df[keep].copy()
     df.index = pd.to_datetime(df.index)
     return df.dropna().sort_index()
-
-
-def _synthetic(symbol, start, end, seed):
-    """기하 브라운 운동 기반 합성 일봉.
-
-    실제 시세는 아니지만 변동성·갭·장중 고저를 흉내 내므로 엔진 검증과
-    '1% 익절' 전략의 거동을 체험하는 데 충분하다.
-    """
-    offset = sum(map(ord, symbol)) if symbol else 0
-    rng = np.random.default_rng(seed + offset)
-    dates = pd.bdate_range(start, end)
-    n = len(dates)
-    if n == 0:
-        raise ValueError("기간(start~end)에 거래일이 없습니다.")
-
-    mu = 0.0004        # 일 평균 수익률 (완만한 상승 추세 가정)
-    sigma = 0.018      # 일 변동성 1.8%
-    intraday = 0.008   # 장중 고가/저가 변동 폭
-    base = 50_000.0
-
-    rets = rng.normal(mu, sigma, n)
-    close = base * np.exp(np.cumsum(rets))
-    prev_close = np.concatenate([[base], close[:-1]])
-    gap = rng.normal(0.0, 0.003, n)
-    open_ = prev_close * (1.0 + gap)
-    high = np.maximum(open_, close) * (1.0 + np.abs(rng.normal(0.0, intraday, n)))
-    low = np.minimum(open_, close) * (1.0 - np.abs(rng.normal(0.0, intraday, n)))
-    volume = rng.integers(1_000_000, 5_000_000, n)
-
-    df = pd.DataFrame(
-        {"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume},
-        index=dates,
-    )
-    return df.round(0)
