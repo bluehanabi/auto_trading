@@ -37,6 +37,38 @@ def sma_cross(df, short=5, long=20):
     return cross.fillna(False)
 
 
+def momentum(df, lookback=10):
+    """최근 lookback 봉 동안 가격이 올랐을 때 진입 (추세추종).
+
+    추세가 이어지는 시장(모멘텀 regime)에서는 우위가 있고, 랜덤워크에서는 없다.
+    """
+    return (df["Close"] > df["Close"].shift(lookback)).fillna(False)
+
+
+def breakout(df, window=20):
+    """직전 window 봉의 고가를 종가가 돌파할 때 진입 (전형적 돌파매매)."""
+    prior_high = df["High"].shift(1).rolling(window).max()
+    return (df["Close"] > prior_high).fillna(False)
+
+
+def volume_breakout(df, window=20, vol_mult=1.5):
+    """거래량이 평소(window 평균)의 vol_mult 배 이상인 상태의 가격 돌파.
+
+    '거래량 동반 돌파' — 돌파의 신뢰도를 거래량으로 거른다.
+    """
+    prior_high = df["High"].shift(1).rolling(window).max()
+    avg_vol = df["Volume"].shift(1).rolling(window).mean()
+    price_break = df["Close"] > prior_high
+    vol_surge = df["Volume"] > vol_mult * avg_vol
+    return (price_break & vol_surge).fillna(False)
+
+
+def pullback(df, ma=20, dip=0.01):
+    """가격이 이동평균보다 dip 이상 아래로 눌렸을 때 진입 (눌림목/평균회귀)."""
+    mid = df["Close"].rolling(ma).mean()
+    return (df["Close"] < mid * (1 - dip)).fillna(False)
+
+
 def rsi_oversold(df, period=14, threshold=30):
     """RSI 가 과매도 구간(threshold) 아래에서 위로 다시 올라올 때."""
     delta = df["Close"].diff()
@@ -51,6 +83,10 @@ def rsi_oversold(df, period=14, threshold=30):
 ENTRY_SIGNALS = {
     "everyday": everyday,
     "upbar": up_candle,
+    "momentum": momentum,
+    "breakout": breakout,
+    "volbreak": volume_breakout,
+    "pullback": pullback,
     "sma": sma_cross,
     "rsi": rsi_oversold,
 }

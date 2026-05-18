@@ -102,15 +102,41 @@ def load_intraday(symbol, start, end, synthetic=False, seed=42, **kwargs):
     )
 
 
+# 합성 데이터 regime 별 분봉 수익률 자기상관 계수(AR(1) phi).
+#   random   : 0    — 랜덤워크. 잡을 패턴이 없다(어떤 신호도 우위 없음).
+#   momentum : +    — 추세 지속. 돌파·모멘텀 신호가 우위를 가진다.
+#   meanrev  : -    — 평균 회귀. 눌림목(pullback) 신호가 우위를 가진다.
+_REGIME_PHI = {"random": 0.0, "momentum": 0.55, "meanrev": -0.55}
+
+
+def _ar1(eps, phi):
+    """AR(1) 과정 생성: r_t = phi * r_{t-1} + eps_t."""
+    if phi == 0.0:
+        return eps
+    out = np.empty_like(eps)
+    prev = 0.0
+    for t in range(len(eps)):
+        prev = phi * prev + eps[t]
+        out[t] = prev
+    return out
+
+
 def make_synthetic_intraday(symbol, start, end, *, seed=42, mu=0.0004,
                             sigma=0.018, base_price=50_000.0, volume_scale=1.0,
-                            bars_per_day=380):
+                            bars_per_day=380, regime="random"):
     """1분봉 합성 데이터.
 
     sigma 는 '일' 변동성이며 분봉 변동성은 sigma/sqrt(bars_per_day) 로 환산한다.
     하루 거래시간을 09:00 부터 bars_per_day 분으로 두고(점심 휴장은 생략),
     거래일 사이에는 오버나이트 갭을 넣는다.
+
+    regime 으로 분봉 수익률의 자기상관(추세/평균회귀)을 주입할 수 있다.
+    기본 'random' 은 랜덤워크라 진입 신호의 우위가 존재하지 않는다.
     """
+    if regime not in _REGIME_PHI:
+        raise ValueError(f"알 수 없는 regime: {regime} (가능: {list(_REGIME_PHI)})")
+    phi = _REGIME_PHI[regime]
+
     offset = sum(map(ord, symbol)) if symbol else 0
     rng = np.random.default_rng(seed + offset)
     days = pd.bdate_range(start, end)
@@ -120,6 +146,7 @@ def make_synthetic_intraday(symbol, start, end, *, seed=42, mu=0.0004,
     bar_sigma = sigma / np.sqrt(bars_per_day)
     bar_mu = mu / bars_per_day
     overnight_sigma = sigma * 0.4
+    eps_sigma = bar_sigma * np.sqrt(max(1.0 - phi * phi, 1e-6))  # 정상분산 보정
 
     stamps, o_all, h_all, l_all, c_all, v_all = [], [], [], [], [], []
     price = base_price
@@ -127,7 +154,7 @@ def make_synthetic_intraday(symbol, start, end, *, seed=42, mu=0.0004,
         price = price * np.exp(rng.normal(0.0, overnight_sigma))   # 시초가 갭
         session = pd.date_range(day + pd.Timedelta(hours=9),
                                 periods=bars_per_day, freq="1min")
-        rets = rng.normal(bar_mu, bar_sigma, bars_per_day)
+        rets = _ar1(rng.normal(0.0, eps_sigma, bars_per_day), phi) + bar_mu
         closes = price * np.exp(np.cumsum(rets))
         opens = np.concatenate([[price], closes[:-1]])
         wig = np.abs(rng.normal(0.0, bar_sigma * 0.6, bars_per_day))
