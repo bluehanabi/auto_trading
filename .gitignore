@@ -1,7 +1,18 @@
-data/cache/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
-.kis_token.json
-watchlist*.csv
+venv/
+
+# 환경 변수 / 시크릿
 .env
+*.key
+
+# Vector DB / 데이터 캐시
+chroma_db/
+*.sqlite3
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
